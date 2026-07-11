@@ -16,7 +16,49 @@ const VISION_MODELS = [
     'meta-llama/llama-4-maverick-17b-128e-instruct',
 ]
 
-const SYSTEM_PROMPT = 'You are a helpful, friendly AI assistant chatting via Discord. Keep responses concise and conversational. Use Discord markdown formatting when appropriate.'
+const SYSTEM_PROMPT = 'You are a helpful, friendly AI assistant chatting via Discord. Keep responses concise and conversational. Use Discord markdown formatting when appropriate. You can create channels, list the channels in this server, and send images when the user asks — use the available tools for that. These tools only work inside a server, not in DMs.'
+
+// Tool/function definitions the AI can call during conversation
+const TOOLS = [
+    {
+        type: 'function',
+        function: {
+            name: 'create_channel',
+            description: 'Create a new text or voice channel in the current Discord server',
+            parameters: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string', description: 'Name of the channel to create' },
+                    channelType: { type: 'string', enum: ['text', 'voice'], description: 'Type of channel to create, defaults to text' },
+                },
+                required: ['name'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'list_channels',
+            description: 'List all channels the bot can see in the current Discord server',
+            parameters: { type: 'object', properties: {} },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'send_image',
+            description: 'Send an image to the current channel from a direct image URL',
+            parameters: {
+                type: 'object',
+                properties: {
+                    url: { type: 'string', description: 'Direct URL to the image file' },
+                    caption: { type: 'string', description: 'Optional short caption to send with the image' },
+                },
+                required: ['url'],
+            },
+        },
+    },
+]
 
 // Per-user conversation history
 const histories = new Map()
@@ -37,7 +79,44 @@ function trimHistory(userId) {
     if (h && h.length > 20) histories.set(userId, h.slice(-20))
 }
 
-async function askAI(userId, text, imageUrls = []) {
+// Executes a single tool call requested by the AI and returns a JSON-serializable result
+async function executeToolCall(toolCall, context) {
+    const { guild, channel } = context
+    let args = {}
+    try {
+        args = JSON.parse(toolCall.function.arguments || '{}')
+    } catch {
+        return { error: 'Could not parse tool arguments.' }
+    }
+
+    try {
+        switch (toolCall.function.name) {
+            case 'create_channel': {
+                if (!guild) return { error: 'Channels can only be created inside a server, not in DMs.' }
+                const type = args.channelType === 'voice' ? 2 : 0
+                const newChannel = await guild.createChannel(args.name, type)
+                return { success: true, channelId: newChannel.id, name: newChannel.name, type: args.channelType || 'text' }
+            }
+            case 'list_channels': {
+                if (!guild) return { error: 'Channel list is only available inside a server, not in DMs.' }
+                const channels = guild.channels.map((c) => ({ id: c.id, name: c.name, type: c.type }))
+                return { channels }
+            }
+            case 'send_image': {
+                if (!channel) return { error: 'No channel available to send the image to.' }
+                const content = args.caption ? `${args.caption}\n${args.url}` : args.url
+                await channel.createMessage(content)
+                return { success: true }
+            }
+            default:
+                return { error: `Unknown tool: ${toolCall.function.name}` }
+        }
+    } catch (err) {
+        return { error: err.message }
+    }
+}
+
+async function askAI(userId, text, imageUrls = [], context = {}) {
     const history = getHistory(userId)
     const hasImages = imageUrls.length > 0
 
@@ -65,11 +144,38 @@ async function askAI(userId, text, imageUrls = []) {
         ? [...new Set([...VISION_MODELS, ...TEXT_MODELS])]
         : TEXT_MODELS
 
+    // Tools are only offered on text-only turns — mixing tool calls with vision
+    // messages is unreliable across models
+    const useTools = !hasImages
+
     let lastError
     for (const model of modelsToTry) {
         try {
-            const response = await groq.chat.completions.create({ model, messages })
-            const reply = response.choices[0].message.content
+            let response = await groq.chat.completions.create({
+                model,
+                messages,
+                ...(useTools ? { tools: TOOLS, tool_choice: 'auto' } : {}),
+            })
+            let message = response.choices[0].message
+
+            // Loop while the model wants to call tools, feeding results back in
+            let iterations = 0
+            while (useTools && message.tool_calls && message.tool_calls.length > 0 && iterations < 5) {
+                messages.push(message)
+                for (const toolCall of message.tool_calls) {
+                    const result = await executeToolCall(toolCall, context)
+                    messages.push({
+                        role: 'tool',
+                        tool_call_id: toolCall.id,
+                        content: JSON.stringify(result),
+                    })
+                }
+                response = await groq.chat.completions.create({ model, messages, tools: TOOLS, tool_choice: 'auto' })
+                message = response.choices[0].message
+                iterations++
+            }
+
+            const reply = message.content || 'Done!'
             history.push({ role: 'assistant', content: reply })
             trimHistory(userId)
             return reply
@@ -119,7 +225,9 @@ async function init(token) {
             },
         ])
         console.log(`Bot ready! Logged in as ${bot.user.username}`)
-        console.log(`Invite URL: https://discord.com/oauth2/authorize?client_id=${bot.user.id}&scope=applications.commands%20bot&permissions=3072`)
+        // permissions: includes Manage Channels (16), Attach Files (32768), Embed Links (16384)
+        // in addition to the original View Channel + Send Messages (3072)
+        console.log(`Invite URL: https://discord.com/oauth2/authorize?client_id=${bot.user.id}&scope=applications.commands%20bot&permissions=52240`)
         console.log('Listening for DMs, mentions, and /chat commands')
     })
 
@@ -130,7 +238,8 @@ async function init(token) {
             const userMessage = interaction.data.options[0].value
             await interaction.acknowledge()
             try {
-                const reply = await askAI(interaction.member?.id || interaction.user.id, userMessage)
+                const context = { guild: interaction.channel?.guild, channel: interaction.channel }
+                const reply = await askAI(interaction.member?.id || interaction.user.id, userMessage, [], context)
                 await interaction.createFollowup({ content: reply, flags: 4 })
             } catch (err) {
                 console.error('AI error:', err.message)
@@ -179,7 +288,8 @@ async function init(token) {
 
         try {
             await msg.channel.sendTyping()
-            const reply = await askAI(msg.author.id, text, imageUrls)
+            const context = { guild: msg.channel.guild, channel: msg.channel }
+            const reply = await askAI(msg.author.id, text, imageUrls, context)
             await sendReply(msg.channel, reply)
         } catch (err) {
             console.error('AI error:', err.message)
