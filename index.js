@@ -374,17 +374,18 @@ async function init(token) {
             .replace(`<@!${bot.user.id}>`, '')
             .trim()
 
-        // If this message is a reply, get the original message so the AI has context.
-        // Eris often embeds it directly as referencedMessage; fall back to fetching it otherwise.
-        let repliedMsg = msg.referencedMessage || null
-        console.log(`[reply-debug] hasReferencedMessage=${!!msg.referencedMessage} hasMessageReference=${!!msg.messageReference}`)
-        if (!repliedMsg && msg.messageReference) {
+        // If this message is a reply, fetch the original message so the AI has context.
+        // Always fetch explicitly via REST — eris's embedded referencedMessage doesn't
+        // reliably include full content.
+        let repliedMsg = null
+        if (msg.messageReference) {
             try {
                 repliedMsg = await bot.getMessage(msg.messageReference.channelID || msg.channel.id, msg.messageReference.messageID)
             } catch (err) {
                 console.warn('Could not fetch replied-to message:', err.message)
             }
         }
+        console.log(`[reply-debug] hasMessageReference=${!!msg.messageReference} repliedContent=${repliedMsg ? JSON.stringify(repliedMsg.content) : 'null'}`)
         if (repliedMsg && repliedMsg.content) {
             const authorName = repliedMsg.author?.username || 'someone'
             const quoted = repliedMsg.content.length > 1000 ? `${repliedMsg.content.slice(0, 1000)}…` : repliedMsg.content
