@@ -16,7 +16,16 @@ const VISION_MODELS = [
     'meta-llama/llama-4-maverick-17b-128e-instruct',
 ]
 
-const SYSTEM_PROMPT = 'You are a helpful, friendly AI assistant chatting via Discord. Keep responses concise and conversational. Use Discord markdown formatting when appropriate. You can create channels, list the channels in this server, and send images when the user asks — use the available tools for that. These tools only work inside a server, not in DMs.'
+const SYSTEM_PROMPT = `You are a helpful, friendly AI assistant chatting via Discord. Keep responses concise and conversational. Use Discord markdown formatting when appropriate.
+
+You can create channels, list the channels in this server, generate brand new images from a description, create text file attachments, and send images from a real URL — use the available tools for these. Channel-related tools only work inside a server, not in DMs.
+
+Important rules:
+- If the user asks you to draw, create, generate, or make an image, use generate_image with a good descriptive prompt — never invent a URL for this.
+- Only use send_image when the user has given you a real URL themselves, or referenced an attachment from this conversation. NEVER invent, guess, or make up an image URL.
+- If the user asks for a file, document, script, or written content as a downloadable attachment, use create_text_file rather than pasting it into chat.
+- Channels of type "category" are folders that organize other channels — you cannot post messages in them, and creating one is not the same as creating a text or voice channel.
+- Never rely on a channel list from earlier in the conversation — channels may have been created or deleted since then outside the bot. Always treat the most recent tool result as the only source of truth for what currently exists.`
 
 // Tool/function definitions the AI can call during conversation
 const TOOLS = [
@@ -24,12 +33,13 @@ const TOOLS = [
         type: 'function',
         function: {
             name: 'create_channel',
-            description: 'Create a new text or voice channel in the current Discord server',
+            description: 'Create a new text, voice, or category channel in the current Discord server',
             parameters: {
                 type: 'object',
                 properties: {
                     name: { type: 'string', description: 'Name of the channel to create' },
-                    channelType: { type: 'string', enum: ['text', 'voice'], description: 'Type of channel to create, defaults to text' },
+                    channelType: { type: 'string', enum: ['text', 'voice', 'category'], description: 'Type of channel to create, defaults to text. A category is a folder for organizing other channels, not a postable channel.' },
+                    parentId: { type: 'string', description: 'Optional ID of an existing category to place this channel under. Must be a real ID obtained from list_channels, never guessed.' },
                 },
                 required: ['name'],
             },
@@ -41,6 +51,37 @@ const TOOLS = [
             name: 'list_channels',
             description: 'List all channels the bot can see in the current Discord server',
             parameters: { type: 'object', properties: {} },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'generate_image',
+            description: 'Generate a brand new image from a text description and attach it directly to the channel. Use this whenever the user asks you to draw, create, generate, or make an image — never invent a URL instead.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    prompt: { type: 'string', description: 'A clear, detailed description of the image to generate' },
+                    caption: { type: 'string', description: 'Optional short caption to send with the image' },
+                },
+                required: ['prompt'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'create_text_file',
+            description: 'Create a text file with given content and attach it directly to the channel. Use this whenever the user asks for a file, document, script, or written content they want as a downloadable attachment rather than a chat message.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    filename: { type: 'string', description: 'Name for the file, including extension, e.g. notes.txt or script.py' },
+                    content: { type: 'string', description: 'The full text content to put in the file' },
+                    caption: { type: 'string', description: 'Optional short caption to send with the file' },
+                },
+                required: ['filename', 'content'],
+            },
         },
     },
     {
@@ -79,6 +120,22 @@ function trimHistory(userId) {
     if (h && h.length > 20) histories.set(userId, h.slice(-20))
 }
 
+// Maps Discord's numeric channel types to clear labels the AI can reason about
+function channelTypeLabel(type) {
+    const labels = { 0: 'text', 2: 'voice', 4: 'category', 5: 'announcement', 13: 'stage', 15: 'forum' }
+    return labels[type] || `other(${type})`
+}
+
+// Always reads live from the guild's current channel cache — never from conversation memory
+function getChannelList(guild) {
+    return guild.channels.map((c) => ({
+        id: c.id,
+        name: c.name,
+        type: channelTypeLabel(c.type),
+        parentId: c.parentID || null,
+    }))
+}
+
 // Executes a single tool call requested by the AI and returns a JSON-serializable result
 async function executeToolCall(toolCall, context) {
     const { guild, channel } = context
@@ -93,17 +150,56 @@ async function executeToolCall(toolCall, context) {
         switch (toolCall.function.name) {
             case 'create_channel': {
                 if (!guild) return { error: 'Channels can only be created inside a server, not in DMs.' }
-                const type = args.channelType === 'voice' ? 2 : 0
-                const newChannel = await guild.createChannel(args.name, type)
-                return { success: true, channelId: newChannel.id, name: newChannel.name, type: args.channelType || 'text' }
+                const type = args.channelType === 'voice' ? 2 : args.channelType === 'category' ? 4 : 0
+                const options = args.parentId ? { parentID: args.parentId } : undefined
+                const newChannel = await guild.createChannel(args.name, type, options)
+                return {
+                    success: true,
+                    created: { id: newChannel.id, name: newChannel.name, type: channelTypeLabel(type) },
+                    // Fresh list included immediately so the AI never has to guess or rely on stale memory
+                    currentChannels: getChannelList(guild),
+                }
             }
             case 'list_channels': {
                 if (!guild) return { error: 'Channel list is only available inside a server, not in DMs.' }
-                const channels = guild.channels.map((c) => ({ id: c.id, name: c.name, type: c.type }))
-                return { channels }
+                return { channels: getChannelList(guild) }
+            }
+            case 'generate_image': {
+                if (!channel) return { error: 'No channel available to send the image to.' }
+                try {
+                    const seed = Math.floor(Math.random() * 1_000_000)
+                    const genUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(args.prompt)}?width=1024&height=1024&seed=${seed}&nologo=true`
+                    const res = await fetch(genUrl)
+                    if (!res.ok) return { error: 'Image generation failed. Try describing the image differently.' }
+                    const buffer = Buffer.from(await res.arrayBuffer())
+                    await channel.createMessage(args.caption || '', { file: buffer, name: 'generated-image.png' })
+                    return { success: true }
+                } catch (err) {
+                    return { error: `Image generation failed: ${err.message}` }
+                }
+            }
+            case 'create_text_file': {
+                if (!channel) return { error: 'No channel available to send the file to.' }
+                try {
+                    const filename = /\.[a-zA-Z0-9]+$/.test(args.filename || '') ? args.filename : `${args.filename || 'file'}.txt`
+                    const buffer = Buffer.from(args.content || '', 'utf-8')
+                    await channel.createMessage(args.caption || '', { file: buffer, name: filename })
+                    return { success: true, filename }
+                } catch (err) {
+                    return { error: `File creation failed: ${err.message}` }
+                }
             }
             case 'send_image': {
                 if (!channel) return { error: 'No channel available to send the image to.' }
+                try {
+                    const head = await fetch(args.url, { method: 'HEAD' })
+                    const contentType = head.headers.get('content-type') || ''
+                    if (!head.ok || !contentType.startsWith('image/')) {
+                        return { error: 'That URL is not a real, reachable image. Do not invent URLs — only use a link the user actually provided, or tell them you cannot generate one.' }
+                    }
+                } catch (err) {
+                    return { error: 'That URL could not be reached. Do not invent image URLs — only use a real link the user provided.' }
+                }
                 const content = args.caption ? `${args.caption}\n${args.url}` : args.url
                 await channel.createMessage(content)
                 return { success: true }
