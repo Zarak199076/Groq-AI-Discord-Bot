@@ -321,9 +321,9 @@ async function init(token) {
             },
         ])
         console.log(`Bot ready! Logged in as ${bot.user.username}`)
-        // permissions: includes Manage Channels (16), Attach Files (32768), Embed Links (16384)
-        // in addition to the original View Channel + Send Messages (3072)
-        console.log(`Invite URL: https://discord.com/oauth2/authorize?client_id=${bot.user.id}&scope=applications.commands%20bot&permissions=52240`)
+        // permissions: View Channel + Send Messages (3072), Manage Channels (16),
+        // Attach Files (32768), Embed Links (16384), Read Message History (65536)
+        console.log(`Invite URL: https://discord.com/oauth2/authorize?client_id=${bot.user.id}&scope=applications.commands%20bot&permissions=117776`)
         console.log('Listening for DMs, mentions, and /chat commands')
     })
 
@@ -369,10 +369,24 @@ async function init(token) {
         if (processingUsers.has(msg.author.id)) return
         processingUsers.add(msg.author.id)
 
-        const text = msg.content
+        let text = msg.content
             .replace(`<@${bot.user.id}>`, '')
             .replace(`<@!${bot.user.id}>`, '')
             .trim()
+
+        // If this message is a reply, fetch the original message so the AI has context
+        if (msg.messageReference) {
+            try {
+                const repliedMsg = await bot.getMessage(msg.channel.id, msg.messageReference.messageID)
+                if (repliedMsg && repliedMsg.content) {
+                    const authorName = repliedMsg.author?.username || 'someone'
+                    const quoted = repliedMsg.content.length > 1000 ? `${repliedMsg.content.slice(0, 1000)}…` : repliedMsg.content
+                    text = `[This is a reply to a message from ${authorName}: "${quoted}"]\n${text}`
+                }
+            } catch (err) {
+                console.warn('Could not fetch replied-to message:', err.message)
+            }
+        }
 
         const imageUrls = getImageUrls(msg)
 
