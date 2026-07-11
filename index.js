@@ -374,18 +374,21 @@ async function init(token) {
             .replace(`<@!${bot.user.id}>`, '')
             .trim()
 
-        // If this message is a reply, fetch the original message so the AI has context
-        if (msg.messageReference) {
+        // If this message is a reply, get the original message so the AI has context.
+        // Eris often embeds it directly as referencedMessage; fall back to fetching it otherwise.
+        let repliedMsg = msg.referencedMessage || null
+        console.log(`[reply-debug] hasReferencedMessage=${!!msg.referencedMessage} hasMessageReference=${!!msg.messageReference}`)
+        if (!repliedMsg && msg.messageReference) {
             try {
-                const repliedMsg = await bot.getMessage(msg.channel.id, msg.messageReference.messageID)
-                if (repliedMsg && repliedMsg.content) {
-                    const authorName = repliedMsg.author?.username || 'someone'
-                    const quoted = repliedMsg.content.length > 1000 ? `${repliedMsg.content.slice(0, 1000)}…` : repliedMsg.content
-                    text = `[This is a reply to a message from ${authorName}: "${quoted}"]\n${text}`
-                }
+                repliedMsg = await bot.getMessage(msg.messageReference.channelID || msg.channel.id, msg.messageReference.messageID)
             } catch (err) {
                 console.warn('Could not fetch replied-to message:', err.message)
             }
+        }
+        if (repliedMsg && repliedMsg.content) {
+            const authorName = repliedMsg.author?.username || 'someone'
+            const quoted = repliedMsg.content.length > 1000 ? `${repliedMsg.content.slice(0, 1000)}…` : repliedMsg.content
+            text = `[This is a reply to a message from ${authorName}: "${quoted}"]\n${text}`
         }
 
         const imageUrls = getImageUrls(msg)
