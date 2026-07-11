@@ -8,21 +8,21 @@
     "zod": "^4.4.3",
     "zod-validation-error": "^5.0.0"
   },
-  "name": "stupid-discord-badge",
+  "name": "Groq-AI-Discord-Bot",
   "version": "1.0.0",
-  "description": "Discord can eat my ass",
+  "description": "AI, shall consume... or something like that",
   "main": "index.js",
   "scripts": {
     "run": "npm i && node ."
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/User9684/stupid-discord-badge.git"
+    "url": "git+https://github.com/Zarak199076/Groq-AI-Discord-Bot.git"
   },
-  "author": "user#6969",
+  "author": "Zarak199076",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/User9684/stupid-discord-badge/issues"
+    "url": "https://github.com/Zarak199076/Groq-AI-Discord-Bot/"
   },
-  "homepage": "https://github.com/User9684/stupid-discord-badge#readme"
+  "homepage": "https://github.com/Zarak199076/Groq-AI-Discord-Bot#readme"
 }
