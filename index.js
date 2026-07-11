@@ -386,7 +386,7 @@ async function init(token) {
             }
         }
         console.log(`[reply-debug] hasMessageReference=${!!msg.messageReference} repliedContent=${repliedMsg ? JSON.stringify(repliedMsg.content) : 'null'}`)
-        if (repliedMsg && repliedMsg.content) {
+        if (repliedMsg && repliedMsg.content && repliedMsg.author?.id !== bot.user.id) {
             const authorName = repliedMsg.author?.username || 'someone'
             const quoted = repliedMsg.content.length > 1000 ? `${repliedMsg.content.slice(0, 1000)}…` : repliedMsg.content
             text = `[This is a reply to a message from ${authorName}: "${quoted}"]\n${text}`
