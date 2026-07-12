@@ -3,18 +3,33 @@ const Groq = require('groq-sdk')
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
-// Models to try in order — all free on Groq
+// General conversation models — all free on Groq (within rate limits)
 const TEXT_MODELS = [
     'llama-3.3-70b-versatile',
+    'openai/gpt-oss-20b',
     'llama-3.1-8b-instant',
-    'gemma2-9b-it',
+]
+
+// Stronger at code generation/debugging — tried first when the message looks code-related
+const CODE_MODELS = [
+    'openai/gpt-oss-120b',
+    'qwen/qwen3.6-27b',
+    'openai/gpt-oss-20b',
 ]
 
 // Vision-capable models
 const VISION_MODELS = [
     'meta-llama/llama-4-scout-17b-16e-instruct',
-    'meta-llama/llama-4-maverick-17b-128e-instruct',
 ]
+
+// Rough heuristic for "this message is about code" — checks for code fences/inline code
+// or common programming keywords, so we know when to prefer the CODE_MODELS chain
+function isCodingQuery(text) {
+    if (!text) return false
+    if (/```|`[^`]+`/.test(text)) return true
+    const keywords = /\b(code|function|bug|error|debug|syntax|programming|script|algorithm|compile|variable|array|object|class|api|json|regex|css|html|javascript|typescript|python|java|c\+\+|c#|sql|npm|node ?js|react|vue|django|flask|git|github|stack ?trace|exception|refactor|optimi[sz]e|snippet|repo|repository|library|framework|endpoint)\b/i
+    return keywords.test(text)
+}
 
 const SYSTEM_PROMPT = `You are a helpful, friendly AI assistant chatting via Discord. Keep responses concise and conversational. Use Discord markdown formatting when appropriate.
 
@@ -238,7 +253,9 @@ async function askAI(userId, text, imageUrls = [], context = {}) {
 
     const modelsToTry = hasImages
         ? [...new Set([...VISION_MODELS, ...TEXT_MODELS])]
-        : TEXT_MODELS
+        : isCodingQuery(text)
+            ? [...new Set([...CODE_MODELS, ...TEXT_MODELS])]
+            : TEXT_MODELS
 
     // Tools are only offered on text-only turns — mixing tool calls with vision
     // messages is unreliable across models
