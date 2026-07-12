@@ -33,11 +33,13 @@ function isCodingQuery(text) {
 
 // Builds the system prompt fresh for each request, so the AI knows its own name,
 // which server it's in, and who it's currently talking to
-function buildSystemPrompt({ botName, guildName, username, displayName }) {
+function buildSystemPrompt({ botName, guildName, displayName }) {
     return `You are ${botName}, a helpful, friendly AI assistant chatting via Discord. Keep responses concise and conversational. Use Discord markdown formatting when appropriate. Your name is ${botName} — when someone addresses that name, they are talking to you, not a third party.
 
 ${guildName ? `You are currently active in the Discord server "${guildName}".` : 'You are currently in a direct message, not a server.'}
-You are talking with a user whose Discord username is ${username}${displayName && displayName !== username ? ` (server nickname: ${displayName})` : ''}.
+The user you're talking to has the display name "${displayName}".
+
+Only bring up the user's name or the server name if they ask about it (e.g. "what's my name", "what server is this") or it's clearly necessary to answer their question — don't volunteer these details or greet people by name unprompted.
 
 You can create channels, list the channels in this server, list the members currently in this server, generate brand new images from a description, create text file attachments, and send images from a real URL — use the available tools for these. Channel and member tools only work inside a server, not in DMs.
 
@@ -385,7 +387,6 @@ async function init(token) {
                     bot,
                     botName: bot.user.username,
                     guildName: interaction.channel?.guild?.name,
-                    username: chatUser?.username,
                     displayName: interaction.member?.nick || chatUser?.globalName || chatUser?.username,
                 }
                 const reply = await askAI(interaction.member?.id || interaction.user.id, userMessage, [], context)
@@ -428,59 +429,4 @@ async function init(token) {
             .trim()
 
         // If this message is a reply, fetch the original message so the AI has context.
-        // Always fetch explicitly via REST — eris's embedded referencedMessage doesn't
-        // reliably include full content.
-        let repliedMsg = null
-        if (msg.messageReference) {
-            try {
-                repliedMsg = await bot.getMessage(msg.messageReference.channelID || msg.channel.id, msg.messageReference.messageID)
-            } catch (err) {
-                console.warn('Could not fetch replied-to message:', err.message)
-            }
-        }
-        console.log(`[reply-debug] hasMessageReference=${!!msg.messageReference} repliedContent=${repliedMsg ? JSON.stringify(repliedMsg.content) : 'null'}`)
-        if (repliedMsg && repliedMsg.content && repliedMsg.author?.id !== bot.user.id) {
-            const authorName = repliedMsg.author?.username || 'someone'
-            const quoted = repliedMsg.content.length > 1000 ? `${repliedMsg.content.slice(0, 1000)}…` : repliedMsg.content
-            text = `[This is a reply to a message from ${authorName}: "${quoted}"]\n${text}`
-        }
-
-        const imageUrls = getImageUrls(msg)
-
-        if (!text && imageUrls.length === 0) {
-            processingUsers.delete(msg.author.id)
-            await msg.channel.createMessage('Hey! What can I help you with?')
-            return
-        }
-
-        try {
-            await msg.channel.sendTyping()
-            const context = {
-                guild: msg.channel.guild,
-                channel: msg.channel,
-                bot,
-                botName: bot.user.username,
-                guildName: msg.channel.guild?.name,
-                username: msg.author.username,
-                displayName: msg.member?.nick || msg.author.globalName || msg.author.username,
-            }
-            const reply = await askAI(msg.author.id, text, imageUrls, context)
-            await sendReply(msg.channel, reply)
-        } catch (err) {
-            console.error('AI error:', err.message)
-            await msg.channel.createMessage('Sorry, something went wrong. Try again in a moment!')
-        } finally {
-            processingUsers.delete(msg.author.id)
-        }
-    })
-
-    bot.connect()
-}
-
-const token = process.argv[2] || process.env.BOT_TOKEN
-if (!token) {
-    console.error('No bot token provided. Set the BOT_TOKEN environment secret or pass it as an argument.')
-    process.exit(1)
-}
-
-init(token)
+ 
