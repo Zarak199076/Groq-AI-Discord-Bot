@@ -1,4 +1,4 @@
 # Groq-AI-Discord-Bot
 Yeah, Discord bot for Groq AI API, its free.
 
-So basically, this can really be any AI, but I used groq
+You can host it locally or use somehting like railway, just change GROK_API_KEY, and BOT_TOKEN
