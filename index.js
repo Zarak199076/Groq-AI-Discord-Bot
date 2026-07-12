@@ -31,16 +31,23 @@ function isCodingQuery(text) {
     return keywords.test(text)
 }
 
-const SYSTEM_PROMPT = `You are a helpful, friendly AI assistant chatting via Discord. Keep responses concise and conversational. Use Discord markdown formatting when appropriate.
+// Builds the system prompt fresh for each request, so the AI knows its own name,
+// which server it's in, and who it's currently talking to
+function buildSystemPrompt({ botName, guildName, username, displayName }) {
+    return `You are ${botName}, a helpful, friendly AI assistant chatting via Discord. Keep responses concise and conversational. Use Discord markdown formatting when appropriate. Your name is ${botName} — when someone addresses that name, they are talking to you, not a third party.
 
-You can create channels, list the channels in this server, generate brand new images from a description, create text file attachments, and send images from a real URL — use the available tools for these. Channel-related tools only work inside a server, not in DMs.
+${guildName ? `You are currently active in the Discord server "${guildName}".` : 'You are currently in a direct message, not a server.'}
+You are talking with a user whose Discord username is ${username}${displayName && displayName !== username ? ` (server nickname: ${displayName})` : ''}.
+
+You can create channels, list the channels in this server, list the members currently in this server, generate brand new images from a description, create text file attachments, and send images from a real URL — use the available tools for these. Channel and member tools only work inside a server, not in DMs.
 
 Important rules:
 - If the user asks you to draw, create, generate, or make an image, use generate_image with a good descriptive prompt — never invent a URL for this.
 - Only use send_image when the user has given you a real URL themselves, or referenced an attachment from this conversation. NEVER invent, guess, or make up an image URL.
 - If the user asks for a file, document, script, or written content as a downloadable attachment, use create_text_file rather than pasting it into chat.
 - Channels of type "category" are folders that organize other channels — you cannot post messages in them, and creating one is not the same as creating a text or voice channel.
-- Never rely on a channel list from earlier in the conversation — channels may have been created or deleted since then outside the bot. Always treat the most recent tool result as the only source of truth for what currently exists.`
+- Never rely on a channel or member list from earlier in the conversation — things may have changed since then outside the bot. Always treat the most recent tool result as the only source of truth for what currently exists.`
+}
 
 // Tool/function definitions the AI can call during conversation
 const TOOLS = [
@@ -102,6 +109,14 @@ const TOOLS = [
     {
         type: 'function',
         function: {
+            name: 'list_server_members',
+            description: 'List members currently in this Discord server, including their username and server nickname if set',
+            parameters: { type: 'object', properties: {} },
+        },
+    },
+    {
+        type: 'function',
+        function: {
             name: 'send_image',
             description: 'Send an image to the current channel from a direct image URL',
             parameters: {
@@ -153,7 +168,7 @@ function getChannelList(guild) {
 
 // Executes a single tool call requested by the AI and returns a JSON-serializable result
 async function executeToolCall(toolCall, context) {
-    const { guild, channel } = context
+    const { guild, channel, bot } = context
     let args = {}
     try {
         args = JSON.parse(toolCall.function.arguments || '{}')
@@ -178,6 +193,18 @@ async function executeToolCall(toolCall, context) {
             case 'list_channels': {
                 if (!guild) return { error: 'Channel list is only available inside a server, not in DMs.' }
                 return { channels: getChannelList(guild) }
+            }
+            case 'list_server_members': {
+                if (!guild) return { error: 'Member list is only available inside a server, not in DMs.' }
+                try {
+                    const members = await bot.getRESTGuildMembers(guild.id, { limit: 100 })
+                    return {
+                        members: members.map((m) => ({ id: m.user.id, username: m.user.username, nickname: m.nick || null })),
+                        note: members.length >= 100 ? 'Only the first 100 members are shown; the server may have more.' : undefined,
+                    }
+                } catch (err) {
+                    return { error: `Could not fetch server members: ${err.message}. This may require enabling the "Server Members Intent" in the Discord Developer Portal.` }
+                }
             }
             case 'generate_image': {
                 if (!channel) return { error: 'No channel available to send the image to.' }
@@ -246,7 +273,7 @@ async function askAI(userId, text, imageUrls = [], context = {}) {
     history.push({ role: 'user', content: text || '(sent an image)' })
 
     const messages = [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: buildSystemPrompt(context) },
         ...history.slice(0, -1),
         { role: 'user', content: userContent },
     ]
@@ -318,7 +345,7 @@ async function sendReply(channel, text) {
 
 async function init(token) {
     const bot = new Client(`Bot ${token}`, {
-        intents: ['guilds', 'directMessages', 'guildMessages', 'messageContent'],
+        intents: ['guilds', 'directMessages', 'guildMessages', 'messageContent', 'guildMembers'],
         maxShards: 'auto',
         restMode: true,
     })
@@ -351,7 +378,16 @@ async function init(token) {
             const userMessage = interaction.data.options[0].value
             await interaction.acknowledge()
             try {
-                const context = { guild: interaction.channel?.guild, channel: interaction.channel }
+                const chatUser = interaction.user || interaction.member?.user
+                const context = {
+                    guild: interaction.channel?.guild,
+                    channel: interaction.channel,
+                    bot,
+                    botName: bot.user.username,
+                    guildName: interaction.channel?.guild?.name,
+                    username: chatUser?.username,
+                    displayName: interaction.member?.nick || chatUser?.globalName || chatUser?.username,
+                }
                 const reply = await askAI(interaction.member?.id || interaction.user.id, userMessage, [], context)
                 await interaction.createFollowup({ content: reply, flags: 4 })
             } catch (err) {
@@ -419,7 +455,15 @@ async function init(token) {
 
         try {
             await msg.channel.sendTyping()
-            const context = { guild: msg.channel.guild, channel: msg.channel }
+            const context = {
+                guild: msg.channel.guild,
+                channel: msg.channel,
+                bot,
+                botName: bot.user.username,
+                guildName: msg.channel.guild?.name,
+                username: msg.author.username,
+                displayName: msg.member?.nick || msg.author.globalName || msg.author.username,
+            }
             const reply = await askAI(msg.author.id, text, imageUrls, context)
             await sendReply(msg.channel, reply)
         } catch (err) {
