@@ -12,6 +12,7 @@ const TEXT_MODELS = [
 
 // Stronger at code generation/debugging — tried first when the message looks code-related
 const CODE_MODELS = [
+    'deepseek-ai/DeepSeek-R1',
     'openai/gpt-oss-120b',
     'qwen/qwen3.6-27b',
     'openai/gpt-oss-20b',
