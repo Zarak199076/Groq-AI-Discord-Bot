@@ -295,7 +295,6 @@ async function askAI(userId, text, imageUrls = [], context = {}) {
     for (const model of modelsToTry) {
         try {
             let response = await groq.chat.completions.create({
-                let response;
 if (model === 'deepseek-ai/DeepSeek-R1') {
   const hfRes = await fetch('https://huggingface.co', {
     method: 'POST',
