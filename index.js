@@ -294,10 +294,23 @@ async function askAI(userId, text, imageUrls = [], context = {}) {
     for (const model of modelsToTry) {
         try {
             let response = await groq.chat.completions.create({
-                model,
-                messages,
-                ...(useTools ? { tools: TOOLS, tool_choice: 'auto' } : {}),
-            })
+                let response;
+if (model === 'deepseek-ai/DeepSeek-R1') {
+  const hfRes = await fetch('https://huggingface.co', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${process.env.HF_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, messages })
+  });
+  const hfData = await hfRes.json();
+  response = { choices: [{ message: { content: hfData.choices[0].message.content } }] };
+} else {
+  response = await groq.chat.completions.create({
+    model,
+    messages,
+    ...(useTools ? { tools: TOOLS, tool_choice: 'auto' } : {}),
+  });
+}
+
             let message = response.choices[0].message
 
             // Loop while the model wants to call tools, feeding results back in
