@@ -14,7 +14,7 @@ const hf = new OpenAI({
 // Models not available on Groq get routed to Hugging Face instead. Keyed by
 // exact model string; anything not listed here goes to Groq as usual.
 const HF_MODELS = new Set([
-    'deepseek-ai/DeepSeek-R1:novita',
+    'moonshotai/Kimi-K2.7-Code:novita',
 ])
 
 // Returns the right API client for a given model string
@@ -31,7 +31,7 @@ const TEXT_MODELS = [
 
 // Stronger at code generation/debugging — tried first when the message looks code-related
 const CODE_MODELS = [
-    'deepseek-ai/DeepSeek-R1:novita',
+    'moonshotai/Kimi-K2.7-Code:novita',
     'openai/gpt-oss-120b',
     'qwen/qwen3.6-27b',
     'openai/gpt-oss-20b',
