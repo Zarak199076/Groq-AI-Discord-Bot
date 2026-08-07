@@ -66,6 +66,8 @@ Only bring up the user's name or the server name if they ask about it (e.g. "wha
 
 You can create channels, list the channels in this server, list the members currently in this server, generate brand new images from a description, create text file attachments, and send images from a real URL — use the available tools for these. Channel and member tools only work inside a server, not in DMs.
 
+If the user attaches a text-based file (code, config, logs, markdown, etc.), its contents will appear inline in their message wrapped as "[Attached file: name]" followed by a code block — treat that as the file's real content, not something the user typed.
+
 Important rules:
 - If the user asks you to draw, create, generate, or make an image, use generate_image with a good descriptive prompt — never invent a URL for this.
 - Only use send_image when the user has given you a real URL themselves, or referenced an attachment from this conversation. NEVER invent, guess, or make up an image URL.
@@ -415,6 +417,56 @@ function getImageUrls(msg) {
         .map((a) => a.url)
 }
 
+// Extensions/content-types treated as readable plain text. Deliberately broad — covers
+// source code, config, and data files people commonly paste in for the bot to look at.
+const TEXT_FILE_EXTENSION_RE = /\.(txt|md|markdown|log|csv|tsv|json|jsonl|yaml|yml|xml|ini|cfg|conf|env|sh|bash|zsh|js|jsx|ts|tsx|mjs|cjs|py|rb|go|rs|java|c|h|cpp|hpp|cs|php|sql|html|htm|css|scss|less|toml|gitignore)$/i
+
+// Any attachment not already picked up as an image is checked against this to decide
+// whether it's worth fetching and inlining as text.
+function isLikelyTextFile(attachment) {
+    const type = attachment.content_type || ''
+    if (type.startsWith('text/') || type === 'application/json' || type === 'application/xml' || type === 'application/x-yaml') return true
+    return TEXT_FILE_EXTENSION_RE.test(attachment.filename || '')
+}
+
+// Fetches the content of any text-like attachments (source files, configs, logs, etc.)
+// and formats them as fenced code blocks the model can read directly. Discord attachment
+// URLs are plain unauthenticated links, so a normal fetch is enough. Each file is capped
+// to avoid blowing out the context window on huge logs/dumps; oversized files are noted
+// but truncated rather than skipped entirely.
+const MAX_TEXT_FILE_CHARS = 20_000
+
+async function fetchTextAttachments(msg) {
+    const candidates = (msg.attachments || []).filter(isLikelyTextFile)
+    const results = []
+    for (const a of candidates) {
+        try {
+            const res = await fetch(a.url)
+            if (!res.ok) {
+                console.warn(`Failed to fetch attachment ${a.filename}: HTTP ${res.status}`)
+                continue
+            }
+            let content = await res.text()
+            let truncatedNote = ''
+            if (content.length > MAX_TEXT_FILE_CHARS) {
+                content = content.slice(0, MAX_TEXT_FILE_CHARS)
+                truncatedNote = ' (truncated)'
+            }
+            results.push({ filename: a.filename, content, truncatedNote })
+        } catch (err) {
+            console.warn(`Failed to fetch attachment ${a.filename}: ${err.message}`)
+        }
+    }
+    return results
+}
+
+// Renders fetched text attachments as fenced blocks to prepend to the user's message text
+function formatTextAttachments(attachments) {
+    return attachments
+        .map((a) => `[Attached file: ${a.filename}${a.truncatedNote}]\n\`\`\`\n${a.content}\n\`\`\``)
+        .join('\n\n')
+}
+
 async function sendReply(channel, text) {
     const chunks = text.match(/[\s\S]{1,2000}/g) || []
     for (const chunk of chunks) {
@@ -524,11 +576,17 @@ async function init(token) {
         }
 
         const imageUrls = getImageUrls(msg)
+        const textAttachments = await fetchTextAttachments(msg)
 
-        if (!text && imageUrls.length === 0) {
+        if (!text && imageUrls.length === 0 && textAttachments.length === 0) {
             processingUsers.delete(msg.author.id)
             await msg.channel.createMessage('Hey! What can I help you with?')
             return
+        }
+
+        if (textAttachments.length > 0) {
+            const filesBlock = formatTextAttachments(textAttachments)
+            text = text ? `${filesBlock}\n\n${text}` : `${filesBlock}\n\nWhat do you think of this?`
         }
 
         try {
