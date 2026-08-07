@@ -12,8 +12,11 @@ const TEXT_MODELS = [
     'llama-3.1-8b-instant',
 ]
 
-// Stronger at code generation/debugging — tried first when the message looks code-related
+// Stronger at code generation/debugging — tried first when the message looks code-related.
+// Kimi K3 goes first: it's routed through HF's InferenceClient to Together AI rather than
+// Groq (see HF_CHAT_ROUTES below), and only gets tried if HF_TOKEN is set.
 const CODE_MODELS = [
+    'moonshotai/Kimi-K3',
     'openai/gpt-oss-120b',
     'qwen/qwen3.6-27b',
     'openai/gpt-oss-20b',
@@ -23,6 +26,24 @@ const CODE_MODELS = [
 const VISION_MODELS = [
     'meta-llama/llama-4-scout-17b-16e-instruct',
 ]
+
+// Models in this map are served via HF's InferenceClient.chatCompletion (routed to the given
+// third-party provider) instead of Groq. Anything not listed here is assumed to be a Groq model.
+const HF_CHAT_ROUTES = {
+    'moonshotai/Kimi-K3': 'together',
+}
+
+// Wraps a single chat-completion call so callers don't need to care whether a given model
+// lives on Groq or is routed through HF -> a third-party provider (e.g. Together AI).
+// Keeps the same call shape/response shape (`.choices[0].message`) either way.
+function chatCompletionCreate(model, messages, extra = {}) {
+    const provider = HF_CHAT_ROUTES[model]
+    if (provider) {
+        if (!hf) throw new Error(`Model ${model} requires HF_TOKEN to be set, but it is not.`)
+        return hf.chatCompletion({ model, provider, messages, ...extra })
+    }
+    return groq.chat.completions.create({ model, messages, ...extra })
+}
 
 // Rough heuristic for "this message is about code" — checks for code fences/inline code
 // or common programming keywords, so we know when to prefer the CODE_MODELS chain
@@ -336,11 +357,15 @@ async function askAI(userId, text, imageUrls = [], context = {}) {
         { role: 'user', content: userContent },
     ]
 
-    const modelsToTry = hasImages
+    let modelsToTry = hasImages
         ? [...new Set([...VISION_MODELS, ...TEXT_MODELS])]
         : isCodingQuery(text)
             ? [...new Set([...CODE_MODELS, ...TEXT_MODELS])]
             : TEXT_MODELS
+
+    // Drop any HF-routed model (e.g. Kimi K3) if HF_TOKEN isn't configured — there's no
+    // point letting it into the retry loop just to throw immediately.
+    if (!hf) modelsToTry = modelsToTry.filter((m) => !HF_CHAT_ROUTES[m])
 
     // Tools are only offered on text-only turns — mixing tool calls with vision
     // messages is unreliable across models
@@ -349,11 +374,7 @@ async function askAI(userId, text, imageUrls = [], context = {}) {
     let lastError
     for (const model of modelsToTry) {
         try {
-            let response = await groq.chat.completions.create({
-                model,
-                messages,
-                ...(useTools ? { tools: TOOLS, tool_choice: 'auto' } : {}),
-            })
+            let response = await chatCompletionCreate(model, messages, useTools ? { tools: TOOLS, tool_choice: 'auto' } : {})
             let message = response.choices[0].message
 
             // Loop while the model wants to call tools, feeding results back in
@@ -368,7 +389,7 @@ async function askAI(userId, text, imageUrls = [], context = {}) {
                         content: JSON.stringify(result),
                     })
                 }
-                response = await groq.chat.completions.create({ model, messages, tools: TOOLS, tool_choice: 'auto' })
+                response = await chatCompletionCreate(model, messages, { tools: TOOLS, tool_choice: 'auto' })
                 message = response.choices[0].message
                 iterations++
             }
